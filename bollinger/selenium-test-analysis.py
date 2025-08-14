@@ -3,11 +3,11 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.formatting.rule import ColorScaleRule
+import argparse
+import sys
 
-FILE_PATH = "tradingview_backtest_results.xlsx"
+# Noms des feuilles d'analyse (constants)
 SHEET_ALL = "All_Results"
-
-
 SHEET_BEST_PER_SYMBOL = "Analysis_Best_Per_Symbol"
 SHEET_BEST_GLOBAL = "Analysis_Best_Global"
 SHEET_COMBO_COUNTS = "Analysis_Combo_Counts"
@@ -144,13 +144,15 @@ def write_analysis(path: str,
                    best_per_sym: pd.DataFrame,
                    best_global: pd.DataFrame,
                    combo_counts: pd.DataFrame,
-                   global_vs_custom: pd.DataFrame):
+                   global_vs_custom: pd.DataFrame,
+                   sheet_names: dict):
+    """Écrit l'analyse dans le fichier Excel avec styling."""
     with pd.ExcelWriter(path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-        all_scored.to_excel(writer, index=False, sheet_name=SHEET_ALL_SCORED)
-        best_per_sym.to_excel(writer, index=False, sheet_name=SHEET_BEST_PER_SYMBOL)
-        best_global.to_excel(writer, index=False, sheet_name=SHEET_BEST_GLOBAL)
-        combo_counts.to_excel(writer, index=False, sheet_name=SHEET_COMBO_COUNTS)
-        global_vs_custom.to_excel(writer, index=False, sheet_name=SHEET_GLOBAL_VS_CUSTOM)
+        all_scored.to_excel(writer, index=False, sheet_name=sheet_names['all_scored'])
+        best_per_sym.to_excel(writer, index=False, sheet_name=sheet_names['best_per_symbol'])
+        best_global.to_excel(writer, index=False, sheet_name=sheet_names['best_global'])
+        combo_counts.to_excel(writer, index=False, sheet_name=sheet_names['combo_counts'])
+        global_vs_custom.to_excel(writer, index=False, sheet_name=sheet_names['global_vs_custom'])
 
     # Styling
     wb = load_workbook(path)
@@ -220,11 +222,11 @@ def write_analysis(path: str,
                     max_len = len(v)
             ws.column_dimensions[col_letter].width = min(max_len + 2, 50)
 
-    style_sheet(SHEET_BEST_GLOBAL, highlight_top5=True, add_scales=True)
-    style_sheet(SHEET_BEST_PER_SYMBOL, highlight_top5=False, add_scales=True)
-    style_sheet(SHEET_ALL_SCORED, highlight_top5=False, add_scales=True)
-    style_sheet(SHEET_COMBO_COUNTS, highlight_top5=False, add_scales=False)
-    style_sheet(SHEET_GLOBAL_VS_CUSTOM, highlight_top5=False, add_scales=True)
+    style_sheet(sheet_names['best_global'], highlight_top5=True, add_scales=True)
+    style_sheet(sheet_names['best_per_symbol'], highlight_top5=False, add_scales=True)
+    style_sheet(sheet_names['all_scored'], highlight_top5=False, add_scales=True)
+    style_sheet(sheet_names['combo_counts'], highlight_top5=False, add_scales=False)
+    style_sheet(sheet_names['global_vs_custom'], highlight_top5=False, add_scales=True)
 
     wb.save(path)
 
@@ -390,7 +392,37 @@ def compare_global_vs_custom(df_scored: pd.DataFrame, best_per_sym: pd.DataFrame
 
 # === Main: Apply hard filters before scoring, then analyze and write ===
 def main():
-    df_raw = load_all_results(FILE_PATH, SHEET_ALL)
+    # Analyse des arguments de ligne de commande
+    parser = argparse.ArgumentParser(description="Analyse des résultats de backtest TradingView")
+    parser.add_argument('--level', choices=['COARSE', 'FINE', 'FULL'], default='FINE',
+                       help='Niveau de test à analyser: COARSE, FINE, ou FULL (défaut: FINE)')
+    args = parser.parse_args()
+    
+    # Configuration du fichier selon le niveau
+    file_path = f"tradingview_backtest_results_{args.level.lower()}.xlsx"
+    
+    # Configuration des noms de feuilles
+    sheet_names = {
+        'all': SHEET_ALL,
+        'all_scored': SHEET_ALL_SCORED,
+        'best_per_symbol': SHEET_BEST_PER_SYMBOL,
+        'best_global': SHEET_BEST_GLOBAL,
+        'combo_counts': SHEET_COMBO_COUNTS,
+        'global_vs_custom': SHEET_GLOBAL_VS_CUSTOM
+    }
+    
+    print(f"🔍 ANALYSE DU NIVEAU {args.level}")
+    print(f"📁 Fichier: {file_path}")
+    
+    # Vérifier que le fichier existe
+    import os
+    if not os.path.exists(file_path):
+        print(f"❌ Erreur: Le fichier {file_path} n'existe pas.")
+        print(f"💡 Assurez-vous d'avoir exécuté les tests pour le niveau {args.level}:")
+        print(f"   python3 test-selenium-single-thread.py --level {args.level}")
+        sys.exit(1)
+    
+    df_raw = load_all_results(file_path, sheet_names['all'])
     df_clean = clean_numeric(df_raw)
 
     # Apply hard filters BEFORE scoring
@@ -406,13 +438,24 @@ def main():
     global_vs_custom = compare_global_vs_custom(df_scored, best_per_sym, best_global)
 
     # Write & style
-    write_analysis(FILE_PATH, df_scored, best_per_sym, best_global, combo_counts, global_vs_custom)
-    print("Analysis complete. Sheets written:")
-    print(f" - {SHEET_ALL_SCORED}")
-    print(f" - {SHEET_BEST_PER_SYMBOL}")
-    print(f" - {SHEET_BEST_GLOBAL}")
-    print(f" - {SHEET_COMBO_COUNTS}")
-    print(f" - {SHEET_GLOBAL_VS_CUSTOM}")
+    write_analysis(file_path, df_scored, best_per_sym, best_global, combo_counts, global_vs_custom, sheet_names)
+    print(f"\n✅ Analyse {args.level} terminée. Feuilles créées dans {file_path}:")
+    print(f" - {sheet_names['all_scored']}")
+    print(f" - {sheet_names['best_per_symbol']}")
+    print(f" - {sheet_names['best_global']}")
+    print(f" - {sheet_names['combo_counts']}")
+    print(f" - {sheet_names['global_vs_custom']}")
+    
+    # Statistiques du niveau analysé
+    total_rows = len(df_raw)
+    filtered_rows = len(df_filtered)
+    symbols_count = df_raw['Symbol'].nunique() if 'Symbol' in df_raw.columns else 0
+    
+    print(f"\n📊 STATISTIQUES NIVEAU {args.level}:")
+    print(f"   📈 {total_rows:,} résultats bruts")
+    print(f"   ✅ {filtered_rows:,} résultats après filtres")
+    print(f"   🎯 {symbols_count} symboles analysés")
+    print(f"   🏆 Taux de réussite: {(filtered_rows/total_rows*100):.1f}%" if total_rows > 0 else "   🏆 Taux de réussite: N/A")
     
     # Afficher un résumé de la comparaison
     if not global_vs_custom.empty:
@@ -429,7 +472,7 @@ def main():
                 print(f"Regret moyen: {avg_regret:.1f}% → Compromis à évaluer selon votre tolérance au risque")
         else:
             print(f"\n=== INFO ===")
-            print(f"Analyse de {len(global_vs_custom)} symboles effectuée, voir feuille {SHEET_GLOBAL_VS_CUSTOM}")
+            print(f"Analyse de {len(global_vs_custom)} symboles effectuée, voir feuille {sheet_names['global_vs_custom']}")
 
 if __name__ == "__main__":
     main()

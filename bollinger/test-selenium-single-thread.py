@@ -299,8 +299,109 @@ def autosave_and_update(xlsx_path: str, symbol_name: str, results_list: list):
     except Exception:
         pass
 
+def finalize_symbol(xlsx_path: str, symbol_name: str):
+    """Force a final formatting pass on the symbol's sheet so the last batch is properly formatted."""
+    try:
+        df_raw = pd.read_excel(xlsx_path, sheet_name=f"{symbol_name}_Results", engine='openpyxl')
+        df_fmt = _format_results_df(df_raw.to_dict(orient='records'), symbol_name)
+        with pd.ExcelWriter(xlsx_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+            df_fmt.to_excel(writer, index=False, sheet_name=f"{symbol_name}_Results")
+        print(f"[Finalize] {symbol_name}: sheet formatted and rewritten.")
+    except Exception as e:
+        print(f"[Finalize] Failed to finalize {symbol_name}: {e}")
+
+# === CONFIG ===
+TRADINGVIEW_URL = "https://www.tradingview.com/chart/0RKjg68o/"
+
+# === NIVEAU DE TEST CONFIGURABLE ===
+TEST_LEVELS = {
+    'COARSE': {
+        'ATR_MULTIPLIERS': [1.0, 1.5, 2.0, 2.5, 3.0],  # 5 valeurs
+        'RR_VALUES': [2.0, 2.5, 3.0, 3.5, 4.0],        # 5 valeurs  
+        'VOL_MULTIPLIERS': [0.8, 1.0, 1.2],            # 3 valeurs
+        'description': 'Test rapide avec 75 combinaisons par symbole'
+    },
+    'FINE': {
+        'ATR_MULTIPLIERS': [round(i * 0.2, 1) for i in range(5, 16)],  # 1.0 à 3.0 par 0.2 = 11 valeurs
+        'RR_VALUES': [round(i * 0.2, 1) for i in range(10, 21)],       # 2.0 à 4.0 par 0.2 = 11 valeurs
+        'VOL_MULTIPLIERS': [round(i * 0.1, 1) for i in range(8, 14)],  # 0.8 à 1.3 par 0.1 = 6 valeurs
+        'description': 'Test intermédiaire avec 726 combinaisons par symbole'
+    },
+    'FULL': {
+        'ATR_MULTIPLIERS': [round(i * 0.1, 1) for i in range(10, 31)],  # 1.0 à 3.0 par 0.1 = 21 valeurs
+        'RR_VALUES': [round(i * 0.1, 1) for i in range(20, 51)],        # 2.0 à 5.0 par 0.1 = 31 valeurs
+        'VOL_MULTIPLIERS': [round(i * 0.1, 1) for i in range(8, 14)],   # 0.8 à 1.3 par 0.1 = 6 valeurs
+        'description': 'Test complet avec 3906 combinaisons par symbole'
+    }
+}
+
+SYMBOL_LIST = ['EURUSD', 'EURAUD', 'USDCAD', 'NZDJPY', 'GBPUSD', 'USDJPY', 'EURJPY', 'GBPJPY', 'AUDUSD', 'AUDJPY', 'AUDCAD', 'USDCHF', 'EURNZD', 'EURGBP', 'NZDUSD', 'EURCAD', 'EURCHF', 'GBPCAD', 'AUDNZD', 'CADCHF', 'GBPCHF', 'CADJPY', 'GBPAUD', 'GBPNZD', 'NZDCAD']
+
+def set_test_level(level='FINE'):
+    """Configure le niveau de test et retourne les paramètres correspondants."""
+    if level not in TEST_LEVELS:
+        print(f"❌ Niveau '{level}' inconnu. Niveaux disponibles: {list(TEST_LEVELS.keys())}")
+        level = 'FINE'
+    
+    config = TEST_LEVELS[level]
+    total_combos = len(config['ATR_MULTIPLIERS']) * len(config['RR_VALUES']) * len(config['VOL_MULTIPLIERS'])
+    
+    print(f"\n📊 NIVEAU DE TEST: {level}")
+    print(f"📈 {config['description']}")
+    print(f"🔢 ATR: {len(config['ATR_MULTIPLIERS'])} valeurs de {min(config['ATR_MULTIPLIERS'])} à {max(config['ATR_MULTIPLIERS'])}")
+    print(f"🔢 RR: {len(config['RR_VALUES'])} valeurs de {min(config['RR_VALUES'])} à {max(config['RR_VALUES'])}")
+    print(f"🔢 Vol: {len(config['VOL_MULTIPLIERS'])} valeurs de {min(config['VOL_MULTIPLIERS'])} à {max(config['VOL_MULTIPLIERS'])}")
+    print(f"⚡ Total par symbole: {total_combos:,} combinaisons")
+    print("")
+    
+    return config['ATR_MULTIPLIERS'], config['RR_VALUES'], config['VOL_MULTIPLIERS']
+
+# === Setup Chrome Remote Debugging Attach ===
+options = Options()
+options.add_argument("--window-size=1920,1080")
+options.debugger_address = "127.0.0.1:9222"
+driver = webdriver.Chrome(options=options)
+
+# --- Argument parser pour options CLI ---
+parser = argparse.ArgumentParser(description="Backtest TradingView avec Selenium")
+parser.add_argument('--skip-complete', action='store_true', help='Ignorer les devises déjà complètes (tous les combos testés)')
+parser.add_argument('--level', choices=['COARSE', 'FINE', 'FULL'], default='FINE', 
+                   help='Niveau de test: COARSE (rapide, 75 combos), FINE (moyen, 726 combos), FULL (complet, 3906 combos)')
+parser.add_argument('--symbols', nargs='*', help='Symboles spécifiques à tester (ex: --symbols EURUSD GBPUSD)')
+args = parser.parse_args()
+
+# Configuration du niveau de test
+ATR_MULTIPLIERS, RR_VALUES, VOL_MULTIPLIERS = set_test_level(args.level)
+
+# Filtrer les symboles si spécifié
+if args.symbols:
+    # Valider que les symboles existent
+    invalid_symbols = [s for s in args.symbols if s not in SYMBOL_LIST]
+    if invalid_symbols:
+        print(f"❌ Symboles invalides: {invalid_symbols}")
+        print(f"📋 Symboles disponibles: {SYMBOL_LIST}")
+        exit(1)
+    SYMBOL_LIST = args.symbols
+    print(f"🎯 Test limité à {len(SYMBOL_LIST)} symbole(s): {', '.join(SYMBOL_LIST)}")
+
+# --- ETA totals (calculés après la configuration) ---
+TOTAL_COMBOS_PER_SYMBOL = len(ATR_MULTIPLIERS) * len(RR_VALUES) * len(VOL_MULTIPLIERS)
+TOTAL_SYMBOLS = len(SYMBOL_LIST)
+GLOBAL_TOTAL_COMBOS = TOTAL_COMBOS_PER_SYMBOL * TOTAL_SYMBOLS
+global_done_combos = 0
+
+# Affichage des totaux finaux
+print(f"🌍 Total pour {TOTAL_SYMBOLS} symbole(s): {GLOBAL_TOTAL_COMBOS:,} tests")
+avg_time_per_test = 4.0
+estimated_hours = (GLOBAL_TOTAL_COMBOS * avg_time_per_test) / 3600
+if estimated_hours < 1:
+    print(f"⏱️ Temps estimé total: ~{estimated_hours*60:.0f} minutes")
+else:
+    print(f"⏱️ Temps estimé total: ~{estimated_hours:.1f}h")
+print("")
+
 # === Load existing results to skip already-tested combinations ===
-output_file = "tradingview_backtest_results.xlsx"
+output_file = f"tradingview_backtest_results_{args.level.lower()}.xlsx"
 if os.path.exists(output_file):
     try:
         book = load_workbook(output_file)
@@ -326,44 +427,6 @@ else:
         pd.DataFrame().to_excel(writer, index=False, sheet_name="All_Results")
         pd.DataFrame().to_excel(writer, index=False, sheet_name="Best_Per_Symbol")
 
-def finalize_symbol(xlsx_path: str, symbol_name: str):
-    """Force a final formatting pass on the symbol's sheet so the last batch is properly formatted."""
-    try:
-        df_raw = pd.read_excel(xlsx_path, sheet_name=f"{symbol_name}_Results", engine='openpyxl')
-        df_fmt = _format_results_df(df_raw.to_dict(orient='records'), symbol_name)
-        with pd.ExcelWriter(xlsx_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
-            df_fmt.to_excel(writer, index=False, sheet_name=f"{symbol_name}_Results")
-        print(f"[Finalize] {symbol_name}: sheet formatted and rewritten.")
-    except Exception as e:
-        print(f"[Finalize] Failed to finalize {symbol_name}: {e}")
-
-# === CONFIG ===
-TRADINGVIEW_URL = "https://www.tradingview.com/chart/0RKjg68o/"
-# Arrays from 1.0 to 5.0 with 0.1 increments
-ATR_MULTIPLIERS = [round(i * 0.1, 1) for i in range(10, 31)]  # 1.0 to 5.0
-RR_VALUES = [round(i * 0.1, 1) for i in range(20, 51)]  # 2.0 to 5.0
-VOL_MULTIPLIERS = [round(i * 0.1, 1) for i in range(8, 14)]  # 0.8 to 1.3
-# ATR_MULTIPLIERS = [1.0, 2.0, 3.0]
-# RR_VALUES = [2.0, 3.0]
-# VOL_MULTIPLIERS = [0.8, 1.2]
-SYMBOL_LIST = ['EURUSD', 'EURAUD', 'USDCAD', 'NZDJPY', 'GBPUSD', 'USDJPY', 'EURJPY', 'GBPJPY', 'AUDUSD', 'AUDJPY', 'AUDCAD', 'USDCHF', 'EURNZD', 'EURGBP', 'NZDUSD', 'EURCAD', 'EURCHF', 'GBPCAD', 'AUDNZD', 'CADCHF', 'GBPCHF', 'CADJPY', 'GBPAUD', 'GBPNZD', 'NZDCAD']
-
-# --- ETA totals ---
-TOTAL_COMBOS_PER_SYMBOL = len(ATR_MULTIPLIERS) * len(RR_VALUES) * len(VOL_MULTIPLIERS)
-TOTAL_SYMBOLS = len(SYMBOL_LIST)
-GLOBAL_TOTAL_COMBOS = TOTAL_COMBOS_PER_SYMBOL * TOTAL_SYMBOLS
-global_done_combos = 0
-# === Setup Chrome Remote Debugging Attach ===
-options = Options()
-options.add_argument("--window-size=1920,1080")
-options.debugger_address = "127.0.0.1:9222"
-driver = webdriver.Chrome(options=options)
-
-# --- Argument parser pour options CLI ---
-parser = argparse.ArgumentParser(description="Backtest TradingView avec Selenium")
-parser.add_argument('--skip-complete', action='store_true', help='Ignorer les devises déjà complètes (tous les combos testés)')
-args = parser.parse_args()
-
 # Navigate to the correct chart
 driver.get(TRADINGVIEW_URL)
 
@@ -374,6 +437,20 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 print("Log into TradingView manually if needed. Starting tests...")
+
+# Confirmation pour les tests longs
+if args.level == 'FULL':
+    estimated_hours = (GLOBAL_TOTAL_COMBOS * 4.0) / 3600
+    print(f"⚠️  ATTENTION: Vous avez sélectionné le niveau FULL")
+    print(f"⏱️  Temps estimé: ~{estimated_hours:.1f}h ({estimated_hours*24:.1f} jours)")
+    confirm = input("🤔 Êtes-vous sûr de vouloir continuer? (tapez 'OUI' pour confirmer): ")
+    if confirm != 'OUI':
+        print("❌ Test annulé.")
+        driver.quit()
+        exit()
+
+print(f"\n🚀 DÉMARRAGE DU TEST NIVEAU {args.level}")
+print(f"📊 {GLOBAL_TOTAL_COMBOS:,} tests au total")
 
 results = []
 
