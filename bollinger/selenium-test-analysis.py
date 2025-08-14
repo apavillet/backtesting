@@ -16,12 +16,12 @@ SHEET_GLOBAL_VS_CUSTOM = "Analysis_Global_vs_Custom"
 
 # === CONFIG: Hard filters & scoring weights (tweak here) ===
 MIN_TRADES      = 30        # discard rows with fewer trades
-MAX_DRAWDOWN    = 15.0      # discard rows with drawdown (%) above this
+MAX_DRAWDOWN    = 10.0      # discard rows with drawdown (%) above this
 MIN_PROFIT_FACT = 1.2       # discard rows with PF below this
-MIN_WIN_RATE    = 25.0      # discard rows with win rate (%) below this
+MIN_WIN_RATE    = 20.0      # discard rows with win rate (%) below this
 
 SCORE_WEIGHTS = {
-    "profit": 1.0,   # weight for Net Profit Clean (absolute)
+    "profit": 3.0,   # weight for Net Profit Clean (absolute)
     "wr": 0.5,       # weight for Win Rate (0-100)
     "pf": 3.0,       # weight for Profit Factor
     "dd": 1.0        # penalty weight for drawdown (higher drawdown reduces score)
